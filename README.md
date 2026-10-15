@@ -52,9 +52,12 @@ path. Everything else (reader, sync, library) stays tailnet-only, and the
 MCP token (`gls_…`, hashed in Postgres, revocable in the Library) is the auth:
 
 ```bash
-tailscale funnel --bg --https=8444 --set-path /mcp http://127.0.0.1:3100/mcp
-# -> https://mori.tail26dff.ts.net:8444/mcp   (Bearer token required)
-tailscale funnel --https=8444 off   # close the public door
+# Funnel's public ingress only supports ports 443, 8443 and 10000. Port 10000
+# is dedicated to MCP here so the reader's :8443 port remains tailnet-only.
+tailscale funnel --bg --https=10000 --set-path /mcp http://127.0.0.1:3100/mcp
+# -> https://mori.tail26dff.ts.net:10000/mcp   (Bearer token required)
+tailscale funnel --https=10000 off   # close the public door
+```
 
 ## Future Tasks
 

@@ -364,7 +364,7 @@ function AgentIntro() {
 const PROMPT = "Go through my X bookmarks from the last month, find the ones that link to articles, essays or papers, and save those links to my Gloss library.";
 
 function Setup({ token, label, origin }: { token: string; label: string; origin: string }) {
-  const url = `${origin}/mcp`;
+  const url = process.env.NEXT_PUBLIC_MCP_URL ?? `${origin}/mcp`;
   const steps: { title: string; body: string; copy: string }[] =
     label === "Grok Bot" || label === "Grok"
       ? [
