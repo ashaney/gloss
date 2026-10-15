@@ -20,9 +20,8 @@ const startOfDay = (t = Date.now()) => {
 /** A line with some substance reads better than a single marked word. */
 const weight = (h: Highlight) => (h.anchor.quote.trim().split(/\s+/).length >= 6 ? 0 : 1);
 
-/** Today's highlights still to see, and how many were already seen today. */
-export function todaysReview(all: Highlight[], now = Date.now()): { deck: Highlight[]; done: number } {
-  const today = startOfDay(now);
+/** Today's highlights still to see, and how many were already seen today. The server passes the reader's own midnight. */
+export function todaysReview(all: Highlight[], now = Date.now(), today = startOfDay(now)): { deck: Highlight[]; done: number } {
   const tomorrow = today + DAY;
   const done = all.filter((h) => (h.review?.last ?? 0) >= today).length;
   const due = all
