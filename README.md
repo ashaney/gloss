@@ -26,6 +26,7 @@
 ## Cloning & running
 
 1. Clone the repo: `git clone https://github.com/ashaney/gloss`
+
 2. Create a `.env.local` file (use `.env.example` for reference) and add:
    - **Meta Model API key**: `MODEL_API_KEY=`
    - **Database URL** for Postgres: `DATABASE_URL=`
@@ -36,7 +37,7 @@
 ## Running on mori
 
 Production runs as a user service bound to loopback only, published to the
-tailnet over HTTPS (never Funnel):
+tailnet over HTTPS (Funnel is used for the MCP endpoint only, below):
 
 ```bash
 npm run build
@@ -44,6 +45,16 @@ systemctl --user enable --now gloss.service   # next start on 127.0.0.1:3100
 tailscale serve --bg --https=8443 http://127.0.0.1:3100
 # -> https://mori.tail26dff.ts.net:8443
 ```
+
+Cloud agents (Grok Bot, claude.ai) can't join the tailnet, so only the MCP
+endpoint is also published publicly via Tailscale Funnel, on its own port and
+path. Everything else (reader, sync, library) stays tailnet-only, and the
+MCP token (`gls_…`, hashed in Postgres, revocable in the Library) is the auth:
+
+```bash
+tailscale funnel --bg --https=8444 --set-path /mcp http://127.0.0.1:3100/mcp
+# -> https://mori.tail26dff.ts.net:8444/mcp   (Bearer token required)
+tailscale funnel --https=8444 off   # close the public door
 
 ## Future Tasks
 
