@@ -332,6 +332,7 @@ function describe(r: ShelfRow) {
   const d = r.data;
   const topic = isTopic(d.topic) ? d.topic : "unsorted";
   return {
+    id: r.id,
     title: String(d.title ?? ""),
     author: typeof d.author === "string" ? d.author : undefined,
     url: typeof d.sourceUrl === "string" ? d.sourceUrl : undefined,
@@ -344,7 +345,8 @@ function describe(r: ShelfRow) {
   };
 }
 
-async function searchLibrary(userId: string, args: Record<string, unknown>) {
+/** The shelf search behind search_library and the loopback /api/shelf (aarOS's Kodama). */
+export async function shelfSearch(userId: string, args: Record<string, unknown>) {
   const words = String(args.query ?? "").toLowerCase().split(/\s+/).filter(Boolean);
   const topic = isTopic(args.topic) ? args.topic : null;
   const status = typeof args.status === "string" ? args.status : null;
@@ -355,7 +357,11 @@ async function searchLibrary(userId: string, args: Record<string, unknown>) {
     .filter((b) => (!topic || b.topic === TOPIC[topic].name) && (!status || b.status === status))
     .filter((b) => words.every((w) => `${b.title} ${b.author ?? ""} ${b.url ?? ""} ${b.topic} ${b.tags.join(" ")}`.toLowerCase().includes(w)))
     .sort((a, b) => b.addedAt.localeCompare(a.addedAt));
-  const shown = found.slice(0, limit);
+  return { found, shown: found.slice(0, limit) };
+}
+
+async function searchLibrary(userId: string, args: Record<string, unknown>) {
+  const { found, shown } = await shelfSearch(userId, args);
   const text = shown.length
     ? `${found.length} found${found.length > shown.length ? `, showing ${shown.length}` : ""}:\n${shown.map((b) => `- ${b.title}${b.author ? `, ${b.author}` : ""} (${b.topic}, ${b.minutes} min, ${b.status})${b.url ? ` ${b.url}` : ""}`).join("\n")}`
     : "Nothing in the library matches.";
