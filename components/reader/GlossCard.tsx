@@ -1,10 +1,9 @@
 "use client";
 
-import { Show, SignInButton } from "@clerk/nextjs";
 import { forwardRef, useEffect, useRef, useState, type CSSProperties } from "react";
 import { ArrowUp, Check, ChevronsDownUp, Copy, CornerDownRight, RotateCcw, Square, Trash2 } from "lucide-react";
 import { ACTIONS } from "@/lib/actions";
-import { followUp, openKeyMenu, retry, stopGloss } from "@/lib/ask";
+import { followUp, retry, stopGloss } from "@/lib/ask";
 import { MODELS } from "@/lib/models";
 import { useStore, type Gloss, type Turn } from "@/lib/store";
 import { undash } from "@/lib/article";
@@ -41,30 +40,6 @@ function Receipt({ t }: { t: Turn }) {
     </span>
   );
 }
-
-
-/** Free answers are spent: the way to keep going is the reader's own key, or, signed out, signing in for more. */
-function KeyButton() {
-  return (
-    <span className="mt-2.5 flex flex-wrap items-center gap-2">
-      <button
-        type="button"
-        onClick={openKeyMenu}
-        className="inline-flex h-8 items-center rounded-full bg-ink px-3.5 text-[12.5px] font-medium text-bg transition-transform active:scale-[0.97]"
-      >
-        Add your Together key
-      </button>
-      <Show when="signed-out">
-        <SignInButton mode="modal">
-          <button type="button" className="inline-flex h-8 items-center rounded-full border border-rule px-3.5 text-[12.5px] font-medium text-ink-2 transition-colors hover:border-rule-strong hover:text-ink">
-            Sign in
-          </button>
-        </SignInButton>
-      </Show>
-    </span>
-  );
-}
-
 /**
  * A card in the margin column: moved to its place along the column, gliding
  * when the layout changes, but put straight in its place the first time.
@@ -82,7 +57,6 @@ function TurnBody({ t }: { t: Turn }) {
     return (
       <>
         <p className="text-[13.5px] text-rubric-text">{t.error}</p>
-        {t.needKey && <KeyButton />}
       </>
     );
   if (t.streaming && !t.content)

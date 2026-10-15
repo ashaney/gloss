@@ -3,7 +3,7 @@
 /**
  * Hard PDF pages, read again in the background. The import shows LiteParse's
  * reading at once; pages whose layout looked hard (columns, tables, maths)
- * are listed in article.upgrade and read here by Qwen3.5-9B through
+ * are listed in article.upgrade and read here by a vision model through
  * /api/pdf-page (mode "layout"), then swapped in one page at a time.
  * On hard pages it scored 6.9/10 in scripts/pdf-eval against 3.9 for the text layer.
  *
@@ -18,7 +18,6 @@
  */
 
 import { blockText, markdownBlocks, modelText, wordCount, type Article, type Block } from "./article";
-import { readApiKey } from "./ask";
 import { htmlTablesToMarkdown, renderPages } from "./pdf";
 import { loadDoc, loadPdf, saveDoc, useStore } from "./store";
 
@@ -91,7 +90,6 @@ export function startUpgrade(id: string, listener: (p: UpgradeProgress) => void)
     run.last = p;
     for (const l of run.listeners) l(p);
   };
-  let stopped = false;
 
   void (async () => {
     let done = 0;
@@ -104,11 +102,10 @@ export function startUpgrade(id: string, listener: (p: UpgradeProgress) => void)
       // Another device has the text but not the file: nothing to read from.
       if (!pdf) return;
       const bytes = new Uint8Array(await pdf.arrayBuffer());
-      const apiKey = readApiKey() || undefined;
       total = pending.length;
       onProgress({ done, total, active: true });
 
-      for (let i = 0; i < pending.length && !stopped; i += AT_ONCE) {
+      for (let i = 0; i < pending.length; i += AT_ONCE) {
         const group = pending.slice(i, i + AT_ONCE);
         let shots: { pageNum: number; image: string }[] = [];
         try {
@@ -120,20 +117,17 @@ export function startUpgrade(id: string, listener: (p: UpgradeProgress) => void)
               const res = await fetch("/api/pdf-page", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ image: s.image, apiKey, mode: "layout" }),
+                body: JSON.stringify({ image: s.image, mode: "layout" }),
               });
-              const j = (await res.json()) as { markdown?: string; code?: string };
-              return { page: s.pageNum, markdown: j.markdown, spent: j.code === "need_key" };
+              const j = (await res.json()) as { markdown?: string };
+              return { page: s.pageNum, markdown: j.markdown };
             } catch {
-              return { page: s.pageNum, markdown: undefined, spent: false };
+              return { page: s.pageNum, markdown: undefined };
             }
           })
         );
 
         for (const r of readings) {
-          // Free use spent: keep the text layer and the list, and try again another day.
-          if (r.spent) stopped = true;
-          if (stopped) break;
           const doc = await loadDoc(id);
           if (!doc || frozen(id)) return;
           const rest = (doc.upgrade ?? []).filter((p) => p !== r.page);

@@ -14,7 +14,6 @@ import { blockText, textToArticle, wordCount, type Article } from "./article";
 import { shelfOf, shelveForUser, tokenUser, type ShelfRow } from "./db";
 import { arxivFullText, fetchArticle, notAnArticle } from "./fetch-article";
 import { TOPIC, TOPICS, isTopic, yearOf, type TopicKey } from "./library";
-import { chargeFree, checkFreeUser } from "./quota";
 import { allow } from "./ratelimit";
 import { classify } from "./shelve";
 import { excerptOf } from "./excerpt";
@@ -219,7 +218,7 @@ async function saveArticles(userId: string, args: Record<string, unknown>, via: 
       return { url, status: "already_saved", title: String(k.data.title ?? "") };
     }
 
-    const { topic, tags, scene } = await sortOf(userId, a);
+    const { topic, tags, scene } = await sortOf(a);
     const item = shelfItem(a, { topic, tags, scene, via });
     await shelveForUser(userId, item, a);
     have.set(key, { id: a.id, data: item as unknown as Record<string, unknown>, pct: 0 });
@@ -248,13 +247,10 @@ function savesLeft(shelf: ShelfRow[]) {
   return PER_DAY - shelf.filter((r) => r.data.addedBy === "agent" && Number(r.data.addedAt) > dayAgo).length;
 }
 
-/** Sort it now, on the reader's own allowance. Out of allowance, it waits in Unsorted and the browser sorts it later. */
-async function sortOf(userId: string, a: Article): Promise<{ topic?: TopicKey; tags?: string[]; scene?: string }> {
-  const free = await checkFreeUser(userId);
-  if (!free.ok) return {};
+/** Sort it now. If sorting fails, it waits in Unsorted and the browser sorts it later. */
+async function sortOf(a: Article): Promise<{ topic?: TopicKey; tags?: string[]; scene?: string }> {
   const c = await classify({ title: a.title, author: a.author, source: a.source, dek: a.dek, excerpt: excerptOf(a.blocks) });
   if (!c.ok) return {};
-  await chargeFree(free.subject, c.usd);
   return { topic: c.shelving.topic, scene: c.shelving.scene, tags: c.shelving.tags.length ? c.shelving.tags : undefined };
 }
 
@@ -295,7 +291,7 @@ async function saveText(userId: string, args: Record<string, unknown>, via: stri
   a.published = str(args.published);
   for (const k of ["author", "source", "sourceUrl", "published"] as const) if (a[k] === undefined) delete a[k];
 
-  const item = shelfItem(a, { ...(await sortOf(userId, a)), via });
+  const item = shelfItem(a, { ...(await sortOf(a)), via });
   await shelveForUser(userId, item, a);
   const topic = TOPIC[isTopic(item.topic) ? item.topic : "unsorted"].name;
   return toolResult(`Saved: ${a.title} (${topic}, ${item.words.toLocaleString("en-US")} words)\n\nIt'll be on the shelves at ${SITE}/library.`, {

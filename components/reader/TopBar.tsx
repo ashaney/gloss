@@ -4,14 +4,12 @@ import { useEffect, useRef, useState } from "react";
 import { Keyboard, NotebookPen } from "lucide-react";
 import { Account } from "@/components/account/Account";
 import { Lockup } from "@/components/brand/Gloss";
-import { KeyMenu } from "@/components/ui/KeyMenu";
-import { ListenButton } from "./Listen";
 import { SettingsMenu } from "@/components/ui/SettingsMenu";
 import { barBtn } from "@/components/ui/Popover";
 import { useGlosses, useHighlights, useStore } from "@/lib/store";
 import { useReader } from "./context";
 
-export function TopBar({ currentN, pastTitle, listenFrom }: { currentN: number | null; pastTitle: boolean; listenFrom: () => string | null }) {
+export function TopBar({ currentN, pastTitle }: { currentN: number | null; pastTitle: boolean }) {
   const { ix, jumpTo } = useReader();
   const [hidden, setHidden] = useState(false);
   const [scrolledUp, setScrolledUp] = useState(false);
@@ -60,15 +58,6 @@ export function TopBar({ currentN, pastTitle, listenFrom }: { currentN: number |
     return () => window.removeEventListener("pointermove", move);
   }, [focusMode]);
 
-  // The key menu lives in this bar: when an answer asks for a key, come back into view.
-  useEffect(() => {
-    const show = () => {
-      setHidden(false);
-      setPeek(true);
-    };
-    window.addEventListener("gloss:key", show);
-    return () => window.removeEventListener("gloss:key", show);
-  }, []);
 
   const tucked = focusMode ? !peek && !scrolledUp && !notebookOpen : hidden && !notebookOpen;
 
@@ -121,9 +110,7 @@ export function TopBar({ currentN, pastTitle, listenFrom }: { currentN: number |
               <Keyboard size={17} strokeWidth={1.8} />
             </button>
           </span>
-          <ListenButton from={listenFrom} />
           <SettingsMenu />
-          <KeyMenu />
           <button
             type="button"
             className={`${barBtn} !px-3 ${notebookOpen ? "bg-sunk text-ink" : ""}`}

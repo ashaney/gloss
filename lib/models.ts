@@ -1,6 +1,6 @@
 /**
  * The model allow-list and wire types. Safe to import on the client: no keys,
- * no fetches. lib/together.ts does the network side.
+ * no fetches. lib/muse.ts does the network side.
  */
 
 export type ModelEntry = {
@@ -14,40 +14,32 @@ export type ModelEntry = {
 };
 
 /**
- * The allow-list. Route and UI both read it. Bake-off 2026-10-09: 3 sample
- * texts x 8 tasks on the real prompts, answers scored blind by a judge.
- *   V4.1 Flash  0.23s to first token, $0.0006 an answer, 7.3/10, best in 11 of 24
- *   V4 Pro      0.58s, $0.0052, 6.5/10
- *   Kimi K3     0.86s, $0.0096, 6.3/10 (best gloss summaries, weak on Related)
- *   GLM-5.3     0.36s at reasoning_effort low, $0.0048, 6.3/10, 3 of the 4 factual errors
- * GLM-5.3 ignores every thinking-off flag (default effort: a 60s summary).
- * Also left out: Qwen3.8 (prints its reasoning into content with thinking off).
- *
- * Flash won on quality as well as speed and cost, so it answers everything:
- * there was a "Deep" choice (V4 Pro, then Kimi K3) and it was dropped
- * 2026-10-09. Older answers and settings may still name "pro"; anything that
- * looks a model up goes through modelOf(), which falls back to Flash.
+ * One model: Muse Spark 1.3 on Meta's Model API (Standard tier, so prompts
+ * and completions are never used for training). There used to be a choice of
+ * open models on Together; this fork is single-reader, single-provider.
+ * Anything that looks a model up goes through modelOf(), which falls back
+ * to Spark for a saved key that is no longer on the list.
  */
 export const MODELS = {
-  flash: {
-    id: "deepseek-ai/DeepSeek-V4.1-Flash",
-    label: "DeepSeek V4.1 Flash",
-    short: "Quick",
-    blurb: "Answers in about half a second. Best for most questions.",
-    inPerM: 0.3,
-    cachedPerM: 0.006,
-    outPerM: 1.2,
+  spark: {
+    id: "muse-spark-1.3",
+    label: "Muse Spark 1.3",
+    short: "Spark",
+    blurb: "Meta's Muse Spark. Reasons briefly, then answers in the margin.",
+    inPerM: 1.25,
+    cachedPerM: 0.15,
+    outPerM: 4.25,
   },
 } as const satisfies Record<string, ModelEntry>;
 
 export type ModelKey = keyof typeof MODELS;
-export const DEFAULT_MODEL: ModelKey = "flash";
+export const DEFAULT_MODEL: ModelKey = "spark";
 
 export function isModelKey(v: unknown): v is ModelKey {
   return typeof v === "string" && v in MODELS;
 }
 
-/** A model key that is still on the list: a saved "pro" from before Deep was dropped becomes Flash. */
+/** A model key that is still on the list: a saved key from another provider era becomes Spark. */
 export const modelOf = (v: unknown): ModelKey => (isModelKey(v) ? v : DEFAULT_MODEL);
 
 export type Usage = {

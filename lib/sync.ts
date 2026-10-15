@@ -1,8 +1,8 @@
 "use client";
 
 /**
- * Account sync for signed-in readers. The browser stays the source of truth
- * while you read; this mirrors it to the account and back.
+ * Sync for the local reader. The browser stays the source of truth
+ * while you read; this mirrors it to the server and back.
  *
  * - Push: what changed since the last push, found by comparing each entity's
  *   stable JSON with a baseline of what the server already has. Deletions are
@@ -12,7 +12,7 @@
  * - Texts travel separately: pushed once with the shelf entry, fetched on
  *   another device only when it is opened there.
  *
- * The baseline lives in localStorage per user, so a second account on the
+ * The baseline lives in localStorage per user, so a different local user on the
  * same browser starts fresh and receives what is on this device.
  *
  * While a page watches the shelf (the library), it also pulls every few
@@ -230,7 +230,7 @@ export function startSync(userId: string) {
   };
 }
 
-/** Fetch one text from the account and keep it on this device. Null when signed out or not there. */
+/** Fetch one text from the server and keep it on this device. Null when not there. */
 export async function fetchText(id: string): Promise<Article | null> {
   try {
     const res = await fetch(`/api/articles/${encodeURIComponent(id)}`);

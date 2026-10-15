@@ -1,18 +1,28 @@
 /**
- * Together AI client. Server-side only. Raw fetch, OpenAI-compatible SSE.
+ * Meta Model API (Muse Spark) client. Server-side only. Raw fetch,
+ * OpenAI-compatible SSE against https://api.meta.ai/v1.
  *
  * Things learned the hard way, kept on purpose:
- * 1. A named User-Agent. Together's WAF has 403'd the default undici agent.
+ * 1. A named User-Agent.
  * 2. stream_options.include_usage, so the cost receipt is real, not a guess.
  * 3. Errors come back as JSON: surface error.message, not the raw body.
- * 4. enable_thinking:false keeps reasoners from spending the budget thinking.
- *    Verified per model on 2026-10-08 with the full sample article (11k tokens).
+ * 4. Muse Spark always reasons, and its reasoning spends from the same
+ *    max_tokens budget as the answer (verified 2026-10-15: max_tokens 200
+ *    returned an empty answer). Every call therefore adds REASONING_TOKENS
+ *    of headroom and pins reasoning_effort, which is the only control Meta
+ *    offers ("none" is a 400). Together's chat_template_kwargs is rejected
+ *    as an unknown parameter, and tool_choice only accepts "auto": a
+ *    follow-up call that must not search again simply sends no tools.
  */
 
-export const TOGETHER_URL = "https://api.together.xyz/v1/chat/completions";
+export const MUSE_URL = "https://api.meta.ai/v1/chat/completions";
+export const MUSE_BASE = "https://api.meta.ai/v1";
 export const APP_UA = "Gloss/0.1";
 
-import { MODELS, costFor, type ModelEntry, type ModelKey, type StreamEvent, type Usage } from "./models";
+/** Reasoning headroom added to every completion budget; see note 4 above. */
+const REASONING_TOKENS = 1200;
+
+import { DEFAULT_MODEL, MODELS, costFor, type ModelEntry, type ModelKey, type StreamEvent, type Usage } from "./models";
 
 export { MODELS, DEFAULT_MODEL, isModelKey, costFor } from "./models";
 export type { ModelKey, StreamEvent, Usage } from "./models";
@@ -24,7 +34,7 @@ export type ChatMessage =
   | { role: "tool"; content: string; tool_call_id: string };
 
 type Chunk = {
-  choices?: { delta?: { content?: string; reasoning_content?: string; tool_calls?: { index: number; id?: string; function?: { name?: string; arguments?: string } }[] } }[];
+  choices?: { delta?: { content?: string; tool_calls?: { index: number; id?: string; function?: { name?: string; arguments?: string } }[] } }[];
   usage?: {
     prompt_tokens?: number;
     completion_tokens?: number;
@@ -42,27 +52,30 @@ function errorMessage(status: number, body: string): string {
   } catch {
     /* not JSON */
   }
-  if (status === 401) return "Together rejected that API key. Check it and try again.";
-  if (status === 429) return "Together is rate limiting this key. Wait a moment, or use your own key.";
-  return `Together API ${status}: ${msg}`;
+  if (status === 401) return "Meta rejected the server API key. Check MODEL_API_KEY on the server.";
+  if (status === 429) return "Meta is rate limiting this key. Wait a moment and try again.";
+  return `Muse API ${status}: ${msg}`;
+}
+
+function serverKey(): string | undefined {
+  return process.env.MODEL_API_KEY?.trim() || undefined;
 }
 
 export async function* streamChat(req: {
   messages: ChatMessage[];
   model: ModelKey;
-  apiKey?: string;
   maxTokens?: number;
   temperature?: number;
   signal?: AbortSignal;
+  /** Reasoning effort for this call. Defaults to "low": margin answers should be quick. */
+  reasoningEffort?: "minimal" | "low" | "medium" | "high";
   /** Tools the model may call; a call ends the stream with a "tool" event instead of an answer. */
   tools?: readonly unknown[];
-  /** "none" sends the tools (a conversation that already used one needs them) but asks for an answer. */
-  toolChoice?: "auto" | "none";
 }): AsyncGenerator<StreamEvent> {
   const model: ModelEntry = MODELS[req.model];
-  const apiKey = req.apiKey?.trim() || process.env.TOGETHER_API_KEY;
+  const apiKey = serverKey();
   if (!apiKey) {
-    yield { type: "error", text: "No Together API key. Set TOGETHER_API_KEY, or add your own key." };
+    yield { type: "error", text: "No Muse API key on the server. Set MODEL_API_KEY in .env.local." };
     return;
   }
 
@@ -70,7 +83,7 @@ export async function* streamChat(req: {
 
   let res: Response;
   try {
-    res = await fetch(TOGETHER_URL, {
+    res = await fetch(MUSE_URL, {
       method: "POST",
       signal: req.signal,
       headers: {
@@ -83,15 +96,15 @@ export async function* streamChat(req: {
         stream: true,
         stream_options: { include_usage: true },
         temperature: req.temperature ?? 0.4,
-        max_tokens: req.maxTokens ?? 900,
-        chat_template_kwargs: { enable_thinking: false },
+        max_tokens: (req.maxTokens ?? 900) + REASONING_TOKENS,
+        reasoning_effort: req.reasoningEffort ?? "low",
         messages: req.messages,
-        ...(req.tools ? { tools: req.tools, tool_choice: req.toolChoice ?? "auto" } : {}),
+        ...(req.tools ? { tools: req.tools, tool_choice: "auto" } : {}),
       }),
     });
   } catch (e) {
     if (req.signal?.aborted) return;
-    yield { type: "error", text: `Could not reach Together: ${String(e)}` };
+    yield { type: "error", text: `Could not reach Muse: ${String(e)}` };
     return;
   }
 
@@ -104,13 +117,12 @@ export async function* streamChat(req: {
   const decoder = new TextDecoder();
   let buffer = "";
   let sawContent = false;
-  let sawReasoning = false;
   // A tool call arrives in pieces, by index: its id and name once, its arguments in fragments.
   const calls: { id: string; name: string; args: string }[] = [];
 
   const finish = (): StreamEvent => {
     if (calls[0]?.name) return { type: "tool", id: calls[0].id || "call_0", name: calls[0].name, args: calls[0].args };
-    return !sawContent && sawReasoning ? { type: "error", text: `${model.label} answered only in its reasoning. Try again.` } : { type: "done" };
+    return !sawContent ? { type: "error", text: `${model.label} returned an empty answer. Try again.` } : { type: "done" };
   };
 
   while (true) {
@@ -135,7 +147,6 @@ export async function* streamChat(req: {
         continue;
       }
       const delta = chunk.choices?.[0]?.delta;
-      if (delta?.reasoning_content) sawReasoning = true;
       for (const tc of delta?.tool_calls ?? []) {
         const c = (calls[tc.index] ??= { id: "", name: "", args: "" });
         if (tc.id) c.id = tc.id;
@@ -164,33 +175,32 @@ export async function* streamChat(req: {
 export async function completeJSON<T>(req: {
   messages: ChatMessage[];
   model: ModelKey;
-  apiKey?: string;
   maxTokens?: number;
   signal?: AbortSignal;
-  /** Let the model reason before it answers, for checking a text against itself. Its thinking spends from maxTokens. */
+  /** Let the model reason harder before it answers, for checking a text against itself. */
   thinking?: boolean;
 }): Promise<{ ok: true; data: T; usage: Usage } | { ok: false; error: string }> {
   const model: ModelEntry = MODELS[req.model];
-  const apiKey = req.apiKey?.trim() || process.env.TOGETHER_API_KEY;
-  if (!apiKey) return { ok: false, error: "No Together API key. Set TOGETHER_API_KEY, or add your own key." };
+  const apiKey = serverKey();
+  if (!apiKey) return { ok: false, error: "No Muse API key on the server. Set MODEL_API_KEY in .env.local." };
 
   let res: Response;
   try {
-    res = await fetch(TOGETHER_URL, {
+    res = await fetch(MUSE_URL, {
       method: "POST",
       signal: req.signal,
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}`, "User-Agent": APP_UA },
       body: JSON.stringify({
         model: model.id,
         temperature: 0.3,
-        max_tokens: req.maxTokens ?? 1400,
-        chat_template_kwargs: { enable_thinking: Boolean(req.thinking) },
+        max_tokens: (req.maxTokens ?? 1400) + REASONING_TOKENS,
+        reasoning_effort: req.thinking ? "medium" : "low",
         response_format: { type: "json_object" },
         messages: req.messages,
       }),
     });
   } catch (e) {
-    return { ok: false, error: `Could not reach Together: ${String(e)}` };
+    return { ok: false, error: `Could not reach Muse: ${String(e)}` };
   }
   const body = await res.text();
   if (!res.ok) return { ok: false, error: errorMessage(res.status, body) };
@@ -209,5 +219,50 @@ export async function completeJSON<T>(req: {
     return { ok: true, data, usage: { promptTokens: pt, cachedTokens: cached, completionTokens: ct, costUsd: costFor(req.model, pt, cached, ct) } };
   } catch {
     return { ok: false, error: "The model returned something that was not valid JSON. Try again." };
+  }
+}
+
+/** One non-streaming chat call with arbitrary (e.g. vision) message content. Server-side only. */
+export async function completeChat(req: {
+  messages: unknown[];
+  model?: string;
+  maxTokens?: number;
+  temperature?: number;
+  reasoningEffort?: "minimal" | "low" | "medium" | "high";
+  signal?: AbortSignal;
+}): Promise<{ ok: true; text: string; usage: { promptTokens: number; completionTokens: number } } | { ok: false; error: string }> {
+  const apiKey = serverKey();
+  if (!apiKey) return { ok: false, error: "No Muse API key on the server. Set MODEL_API_KEY in .env.local." };
+  let res: Response;
+  try {
+    res = await fetch(MUSE_URL, {
+      method: "POST",
+      signal: req.signal,
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}`, "User-Agent": APP_UA },
+      body: JSON.stringify({
+        model: req.model ?? MODELS[DEFAULT_MODEL].id,
+        temperature: req.temperature ?? 0,
+        max_tokens: (req.maxTokens ?? 4096) + REASONING_TOKENS,
+        reasoning_effort: req.reasoningEffort ?? "low",
+        messages: req.messages,
+      }),
+    });
+  } catch (e) {
+    return { ok: false, error: `Could not reach Muse: ${String(e)}` };
+  }
+  const body = await res.text();
+  if (!res.ok) return { ok: false, error: errorMessage(res.status, body) };
+  try {
+    const j = JSON.parse(body) as {
+      choices?: { message?: { content?: string } }[];
+      usage?: { prompt_tokens?: number; completion_tokens?: number };
+    };
+    return {
+      ok: true,
+      text: j.choices?.[0]?.message?.content ?? "",
+      usage: { promptTokens: j.usage?.prompt_tokens ?? 0, completionTokens: j.usage?.completion_tokens ?? 0 },
+    };
+  } catch {
+    return { ok: false, error: "The model returned an unreadable response. Try again." };
   }
 }

@@ -1,6 +1,6 @@
--- Gloss: a signed-in reader's shelf, marks and notes, mirrored from the browser.
+-- Gloss: the local reader's shelf, marks and notes, mirrored from the browser.
 -- Every synced table has the same shape so one sync route serves them all:
--- rows are owned by a Clerk user id, carry the client's object as jsonb, and
+-- rows are owned by the single local user id, carry the client's object as jsonb, and
 -- are never hard-deleted by the app (a tombstone tells other devices).
 -- Safe to run more than once.
 
@@ -61,21 +61,8 @@ create index if not exists glosses_user_updated on glosses (user_id, updated_at)
 create index if not exists briefs_user_updated on briefs (user_id, updated_at);
 create index if not exists progress_user_updated on progress (user_id, updated_at);
 
--- Free use of the shared Together key: one counter per reader per day.
--- A subject is "answer:user:<clerk id>" or "answer:ip:<hashed address>"; raw addresses are never stored.
-create table if not exists free_usage (
-  subject text not null,
-  day date not null default current_date,
-  count integer not null default 0,
-  primary key (subject, day)
-);
 
--- What that free use cost, in dollars: the allowance is a budget, not a count.
--- "free:all" is everyone's total, for the daily ceiling.
-alter table free_usage add column if not exists usd double precision not null default 0;
-
--- Covers painted for a signed-in reader's texts (opt-in), so other devices fetch them
--- instead of painting them again. A JPEG, base64.
+-- Covers painted for the reader's texts (opt-in), so other devices fetch them
 create table if not exists covers (
   user_id text not null,
   id text not null,             -- the article id
@@ -84,7 +71,7 @@ create table if not exists covers (
   primary key (user_id, id)
 );
 
--- Tokens that let a reader's agent (Grok Bot, Claude, ...) save to their library through /mcp.
+-- Tokens that let the reader's agent (Grok Bot, Claude, ...) save to their library through /mcp.
 -- Only a hash of each token is kept; the token itself is shown once, when it is made.
 create table if not exists agent_tokens (
   id text primary key,

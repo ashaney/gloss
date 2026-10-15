@@ -1,5 +1,5 @@
 import type { Action } from "./actions";
-import type { ChatMessage } from "./together";
+import type { ChatMessage } from "./muse";
 
 export type DocPayload = {
   title: string;
@@ -21,8 +21,8 @@ export type ThreadPayload = {
 
 /**
  * The system message carries the whole text and nothing that varies per
- * question, so Together's prefix cache serves every follow-up on the same
- * article at the cached rate (about 2% of the fresh input price on Flash).
+ * question, so Muse's prefix cache serves every follow-up on the same
+ * article at the cached rate.
  */
 export function systemFor(doc: DocPayload): string {
   const byline = [doc.author, doc.published].filter(Boolean).join(", ");
@@ -136,7 +136,7 @@ export const BRIEF_TASK = `Read the whole text and return JSON only, with this s
   "sections": [{ "title": "2 to 5 words", "start": 1 }]
 }
 Rules:
-- 3 to 5 claims, each citing the single paragraph that best supports it. Together they carry the text's load-bearing ideas in its own order: what it argues and how it gets there, then what its evidence shows. No more than two claims are results.
+- 3 to 5 claims, each citing the single paragraph that best supports it. As a set they carry the text's load-bearing ideas in its own order: what it argues and how it gets there, then what its evidence shows. No more than two claims are results.
 - Numbers come from the text's evidence (its tables and data), never from a sentence that sums them up (an abstract, introduction, conclusion, or prose that restates a table), and cite the paragraph that holds them. Check every summary figure against the table it summarizes before you repeat it: when they disagree, use what the table shows and add a caveat that the summary says otherwise. Prefer figures the table reports outright, like "89.8% against 92.3%", over averages or ranges you would have to work out.
 - Make every comparison exactly as strong as the evidence. Give the numbers instead of words like "matches", "approaches" or "outperforms", and say where it falls short or loses.
 - The gist claims no more than the claims do.

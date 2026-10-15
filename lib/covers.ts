@@ -7,7 +7,6 @@
  * one is a call to an image model).
  */
 
-import { readApiKey } from "./ask";
 import { isTopic } from "./library";
 import { useStore, type LibraryItem } from "./store";
 
@@ -61,14 +60,14 @@ export async function paintedUrl(id: string): Promise<string | null> {
 
 export const forgetCover = (id: string) => tx("readwrite", (s) => s.delete(id));
 
-/** Paint one text's cover. "rest" means the free allowance is spent, so the queue should stop. */
+/** Paint one text's cover. "rest" means the image service is rate-limited, so the queue should stop. */
 export async function paint(item: LibraryItem): Promise<"ok" | "rest" | "error"> {
   if (!item.scene || !isTopic(item.topic)) return "error";
   try {
     const res = await fetch("/api/covers", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id: item.id, scene: item.scene, topic: item.topic, apiKey: readApiKey() || undefined }),
+      body: JSON.stringify({ id: item.id, scene: item.scene, topic: item.topic }),
     });
     if (res.status === 429 || res.status === 401) return "rest";
     if (!res.ok) return "error";
@@ -84,7 +83,7 @@ export async function paint(item: LibraryItem): Promise<"ok" | "rest" | "error">
 
 let painting = false;
 
-/** Paint every sorted text that has no cover yet, until the allowance runs out. */
+/** Paint every sorted text that has no cover yet, until the image service asks for a rest. */
 export async function paintAll(items: LibraryItem[]): Promise<void> {
   if (painting) return;
   painting = true;

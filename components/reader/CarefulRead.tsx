@@ -2,12 +2,11 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { Article } from "@/lib/article";
-import { openKeyMenu, readApiKey } from "@/lib/ask";
 import { readCarefully } from "@/lib/careful";
 import { startUpgrade, type UpgradeProgress } from "@/lib/upgrade";
 import { loadPdf, useGlosses, useHighlights } from "@/lib/store";
 
-type State = { kind: "idle" } | { kind: "confirm" } | { kind: "reading" } | { kind: "done" } | { kind: "error"; error: string; needKey?: boolean };
+type State = { kind: "idle" } | { kind: "confirm" } | { kind: "reading" } | { kind: "done" } | { kind: "error"; error: string };
 
 /**
  * A quiet line under the byline of an imported PDF: when columns, tables or
@@ -17,7 +16,6 @@ type State = { kind: "idle" } | { kind: "confirm" } | { kind: "reading" } | { ki
 export function CarefulRead({ article }: { article: Article }) {
   const [hasPdf, setHasPdf] = useState(false);
   const [state, setState] = useState<State>({ kind: "idle" });
-  const [hasKey, setHasKey] = useState(false);
   const marks = useHighlights(article.id).length + useGlosses(article.id).length;
   const abort = useRef<AbortController | null>(null);
   const [upgrading, setUpgrading] = useState<UpgradeProgress | null>(null);
@@ -31,15 +29,8 @@ export function CarefulRead({ article }: { article: Article }) {
   useEffect(() => {
     let live = true;
     if (article.origin === "file") void loadPdf(article.id).then((b) => live && setHasPdf(Boolean(b)));
-    setHasKey(Boolean(readApiKey()));
-    // The key can be added from the menu while this is on screen.
-    const recheck = () => setHasKey(Boolean(readApiKey()));
-    window.addEventListener("storage", recheck);
-    window.addEventListener("focus", recheck);
     return () => {
       live = false;
-      window.removeEventListener("storage", recheck);
-      window.removeEventListener("focus", recheck);
       abort.current?.abort();
     };
   }, [article.id, article.origin]);
@@ -50,10 +41,9 @@ export function CarefulRead({ article }: { article: Article }) {
     abort.current = new AbortController();
     setState({ kind: "reading" });
     const r = await readCarefully(article, abort.current.signal);
-    setState(r.ok ? { kind: "done" } : { kind: "error", error: r.error, needKey: r.needKey });
+    setState(r.ok ? { kind: "done" } : { kind: "error", error: r.error });
   };
   const start = () => {
-    if (!readApiKey()) return openKeyMenu();
     if (marks > 0) setState({ kind: "confirm" });
     else void run();
   };
@@ -70,7 +60,6 @@ export function CarefulRead({ article }: { article: Article }) {
           <button type="button" onClick={start} className={link}>
             Read it more carefully
           </button>
-          {!hasKey && <span className="text-ink-4"> · needs your Together key</span>}
         </p>
       )}
       {state.kind === "confirm" && (
@@ -97,15 +86,9 @@ export function CarefulRead({ article }: { article: Article }) {
       {state.kind === "error" && (
         <p>
           <span className="text-rubric-text">{state.error}</span>{" "}
-          {state.needKey ? (
-            <button type="button" onClick={openKeyMenu} className={link}>
-              Add your Together key
-            </button>
-          ) : (
-            <button type="button" onClick={() => setState({ kind: "idle" })} className={link}>
-              Back
-            </button>
-          )}
+          <button type="button" onClick={() => setState({ kind: "idle" })} className={link}>
+            Back
+          </button>
         </p>
       )}
     </div>

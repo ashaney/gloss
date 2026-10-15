@@ -1,6 +1,7 @@
 /**
- * The request's address, and a small per-instance counter. The daily free
- * allowance lives in lib/quota.ts and uses this only when there is no database.
+ * The request's address, and a small per-instance counter used as a burst
+ * guard (search calls, careful-read pages). No accounts, no daily budget:
+ * this fork has one reader behind the tailnet.
  */
 const buckets = new Map<string, { count: number; reset: number }>();
 

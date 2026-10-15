@@ -3,7 +3,7 @@ PDF eval: how well does each reader turn hard PDF pages into Markdown?
 
 Contenders, per page:
   text-layer        the PDF's own text layer (what a plain extractor like pdf.js gets; nothing on scans)
-  qwen3.5-9b        Qwen/Qwen3.5-9B on Together, reading a rendered image of the page
+  muse-spark        muse-spark-1.3 on Meta's Model API, reading a rendered image of the page
   llamaparse-cost   LlamaParse, tier "cost_effective"
   llamaparse-agent  LlamaParse, tier "agentic"
 
@@ -13,7 +13,7 @@ and writes out/<page>/... plus out/summary.json. Quality is judged separately (b
 Pages are in pages.json; "scan": true pages are turned into image-only PDFs first (rotated,
 noisy, JPEG-compressed), the way a phone or office scanner would make them.
 
-Needs: pip install pymupdf requests; TOGETHER_API_KEY and LLAMA_CLOUD_API_KEY in the environment.
+Needs: pip install pymupdf requests; MODEL_API_KEY and LLAMA_CLOUD_API_KEY in the environment.
   python scripts/pdf-eval/run.py [outdir]
 """
 
@@ -27,12 +27,12 @@ import requests
 HERE = Path(__file__).parent
 OUT = Path(sys.argv[1]) if len(sys.argv) > 1 else HERE / "out"
 CFG = json.loads((HERE / "pages.json").read_text())
-TOGETHER = os.environ["TOGETHER_API_KEY"]
+MUSE = os.environ["MODEL_API_KEY"]
 LLAMA = os.environ["LLAMA_CLOUD_API_KEY"]
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/141.0 Safari/537.36"
 
-QWEN = "Qwen/Qwen3.5-9B"
-QWEN_IN, QWEN_OUT = 0.17, 0.25  # $ per million tokens, Together, 2026-10-10
+VISION = "muse-spark-1.3"
+VISION_IN, VISION_OUT = 1.25, 4.25  # $ per million tokens, Muse Spark Standard, 2026-10-15
 LLAMA_CREDIT = 0.00125  # $ per credit
 PROMPT = (
     "Convert this page to Markdown. Keep the reading order (read columns top to bottom, left column first), "
@@ -92,22 +92,22 @@ def text_layer(pdf_bytes):
     return {"markdown": d[0].get_text(), "seconds": time.time() - t0, "usd": 0.0}
 
 
-def qwen(pdf_bytes):
+def muse_vision(pdf_bytes):
     t0 = time.time()
     b64 = base64.b64encode(png_of(pdf_bytes, 130)).decode()
     body = {
-        "model": QWEN,
-        "max_tokens": 6000,
+        "model": VISION,
+        "max_tokens": 7200,
         "temperature": 0,
-        "chat_template_kwargs": {"enable_thinking": False},
+        "reasoning_effort": "low",
         "messages": [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}}, {"type": "text", "text": PROMPT}]}],
     }
-    r = requests.post("https://api.together.xyz/v1/chat/completions", json=body, headers={"Authorization": f"Bearer {TOGETHER}", "User-Agent": "Gloss/0.1"}, timeout=300)
+    r = requests.post("https://api.meta.ai/v1/chat/completions", json=body, headers={"Authorization": f"Bearer {MUSE}", "User-Agent": "Gloss/0.1"}, timeout=300)
     j = r.json()
     if "error" in j:
         return {"markdown": "", "error": j["error"].get("message", str(j["error"])), "seconds": time.time() - t0, "usd": 0.0}
     u = j.get("usage", {})
-    usd = (u.get("prompt_tokens", 0) * QWEN_IN + u.get("completion_tokens", 0) * QWEN_OUT) / 1e6
+    usd = (u.get("prompt_tokens", 0) * VISION_IN + u.get("completion_tokens", 0) * VISION_OUT) / 1e6
     md = j["choices"][0]["message"].get("content") or ""
     return {"markdown": md, "seconds": time.time() - t0, "usd": usd, "finish": j["choices"][0].get("finish_reason")}
 
@@ -144,7 +144,7 @@ def llamaparse(pdf_bytes, tier):
 
 READERS = {
     "text-layer": text_layer,
-    "qwen3.5-9b": qwen,
+    "muse-spark": muse_vision,
     "llamaparse-cost": lambda b: llamaparse(b, "cost_effective"),
     "llamaparse-agent": lambda b: llamaparse(b, "agentic"),
 }

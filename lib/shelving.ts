@@ -8,31 +8,28 @@
  */
 
 import type { Article } from "./article";
-import { readApiKey } from "./ask";
 import type { Shelving } from "./library";
 import { excerptOf } from "./excerpt";
 import { loadDoc, useStore, type LibraryItem } from "./store";
 
 const inflight = new Set<string>();
-/** The free allowance ran out: stop sorting quietly until the next visit. */
-let resting = false;
 
 type Text = Pick<Article, "id" | "title" | "author" | "source" | "dek"> & { blocks?: Article["blocks"] };
 
 export async function shelveText(a: Text): Promise<void> {
-  if (resting || inflight.has(a.id)) return;
+  if (inflight.has(a.id)) return;
   inflight.add(a.id);
   try {
     const res = await fetch("/api/shelve", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ title: a.title, author: a.author, source: a.source, dek: a.dek, excerpt: a.blocks ? excerptOf(a.blocks) : undefined, apiKey: readApiKey() || undefined }),
+      body: JSON.stringify({ title: a.title, author: a.author, source: a.source, dek: a.dek, excerpt: a.blocks ? excerptOf(a.blocks) : undefined }),
     });
-    if (res.status === 429 || res.status === 401) {
-      const j = (await res.json().catch(() => ({}))) as { code?: string };
-      // Spent for today, or no key at all: rest. A burst limit just means slow down.
-      if (j.code === "need_key") resting = true;
-      else await new Promise((r) => setTimeout(r, 15_000));
+    if (res.status === 429) {
+      // A burst limit just means slow down.
+      const { promise, resolve } = Promise.withResolvers<void>();
+      setTimeout(resolve, 15_000);
+      await promise;
       return;
     }
     if (!res.ok) return;
@@ -52,16 +49,18 @@ let backfilling = false;
 
 /** Sort what was shelved before the library existed: two at a time, a few dozen a visit. */
 export async function backfill(items: LibraryItem[], limit = 40): Promise<void> {
-  if (backfilling || resting) return;
+  if (backfilling) return;
   const todo = items.filter((x) => !x.topic && x.origin !== "sample").slice(0, limit);
   if (!todo.length) return;
   backfilling = true;
   try {
     const next = async () => {
-      for (let x = todo.shift(); x && !resting; x = todo.shift()) {
+      for (let x = todo.shift(); x; x = todo.shift()) {
         const doc = await loadDoc(x.id).catch(() => null);
         await shelveText(doc ?? { id: x.id, title: x.title, author: x.author, source: x.source, dek: x.dek });
-        await new Promise((r) => setTimeout(r, 400));
+        const { promise, resolve } = Promise.withResolvers<void>();
+        setTimeout(resolve, 400);
+        await promise;
       }
     };
     await Promise.all([next(), next()]);

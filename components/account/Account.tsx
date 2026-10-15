@@ -1,24 +1,12 @@
 "use client";
 
-import { Show, SignInButton, UserButton } from "@clerk/nextjs";
 import { barBtn } from "@/components/ui/Popover";
 
-/** Signed out: a quiet "Sign in". Signed in: the avatar, with Clerk's account menu. */
+/** Sync is always on for the local reader; agent connections live in the library's Add panel. */
 export function Account() {
   return (
-    <>
-      <Show when="signed-out">
-        <SignInButton mode="modal">
-          <button type="button" className={`${barBtn} !px-3 whitespace-nowrap`} data-tip="Keep your highlights and notes on every device">
-            Sign in
-          </button>
-        </SignInButton>
-      </Show>
-      <Show when="signed-in">
-        <span className="grid size-9 place-items-center">
-          <UserButton appearance={{ elements: { avatarBox: "size-7" } }} />
-        </span>
-      </Show>
-    </>
+    <span className={`${barBtn} !px-3 whitespace-nowrap`} data-tip="Highlights and notes sync to the local library">
+      Synced
+    </span>
   );
 }
