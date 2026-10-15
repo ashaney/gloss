@@ -1,11 +1,15 @@
 /**
  * Reading a web page into an Article, on the server: the link import, and
  * anything an agent saves. Every redirect hop is checked against private,
- * loopback and link-local addresses before it is fetched.
+ * loopback and link-local addresses before it is fetched, and every connection
+ * checks the address it actually dials, so a name can't pass the first check
+ * and then resolve somewhere private for the fetch.
  */
 
+import dns from "node:dns";
 import { lookup } from "node:dns/promises";
-import { isIP } from "node:net";
+import { isIP, type LookupFunction } from "node:net";
+import { Agent } from "undici";
 import { parseHTML } from "linkedom";
 import { imageStem, leadImage, prepareImages } from "@/lib/images";
 import { Readability } from "@mozilla/readability";
@@ -35,6 +39,32 @@ function isPrivate(ip: string): boolean {
   );
 }
 
+const PRIVATE = "That address is not reachable from here.";
+
+/** A resolver for each connection that refuses a private address, whatever an earlier lookup said. */
+const publicOnly: LookupFunction = (hostname, options, callback) => {
+  dns.lookup(hostname, { ...options, all: true }, (err, addresses) => {
+    if (err) return callback(err, "", 0);
+    const list = addresses as dns.LookupAddress[];
+    if (!list.length || list.some((a) => isPrivate(a.address))) {
+      return callback(Object.assign(new Error(PRIVATE), { code: "EPRIVATEADDR" }), "", 0);
+    }
+    if (options.all) return (callback as unknown as (e: null, a: dns.LookupAddress[]) => void)(null, list);
+    callback(null, list[0].address, list[0].family);
+  });
+};
+
+/** Outside fetches go through this: the same fetch, but every socket resolves with publicOnly. */
+const outside = new Agent({ connect: { lookup: publicOnly } });
+
+/** Whether a failed fetch was the per-connection check refusing a private address. */
+function refusedPrivate(e: unknown): boolean {
+  for (let c: unknown = e; c && typeof c === "object"; c = (c as { cause?: unknown }).cause) {
+    if ((c as { code?: string }).code === "EPRIVATEADDR") return true;
+  }
+  return false;
+}
+
 async function safeUrl(raw: string): Promise<URL | string> {
   let url: URL;
   try {
@@ -44,10 +74,10 @@ async function safeUrl(raw: string): Promise<URL | string> {
   }
   if (url.protocol !== "http:" && url.protocol !== "https:") return "Only http and https links can be imported.";
   const host = url.hostname.replace(/^\[|\]$/g, "");
-  if (host === "localhost" || host.endsWith(".local") || host.endsWith(".internal")) return "That address is not reachable from here.";
+  if (host === "localhost" || host.endsWith(".local") || host.endsWith(".internal")) return PRIVATE;
   try {
     const ips = isIP(host) ? [host] : (await lookup(host, { all: true })).map((a) => a.address);
-    if (ips.some(isPrivate)) return "That address is not reachable from here.";
+    if (ips.some(isPrivate)) return PRIVATE;
   } catch {
     return "Could not find that site. Check the link.";
   }
@@ -158,21 +188,24 @@ export async function fetchArticle(raw: string, opts: { pdf?: boolean } = {}): P
   let target: URL = checked;
   try {
     for (let hop = 0; hop < 5; hop++) {
+      // Node's fetch takes an undici dispatcher; the DOM's RequestInit type doesn't name it.
       res = await fetch(target, {
+        dispatcher: outside,
         redirect: "manual",
         signal: AbortSignal.timeout(15_000),
         headers: {
           "User-Agent": `Mozilla/5.0 (compatible; ${APP_UA}; +reader)`,
           Accept: opts.pdf ? "text/html,application/xhtml+xml,application/pdf" : "text/html,application/xhtml+xml",
         },
-      });
+      } as RequestInit);
       const location = res.status >= 300 && res.status < 400 ? res.headers.get("location") : null;
       if (!location) break;
       const next = await safeUrl(new URL(location, target).toString());
       if (typeof next === "string") return { ok: false, error: next, status: 400 };
       target = next;
     }
-  } catch {
+  } catch (e) {
+    if (refusedPrivate(e)) return { ok: false, error: PRIVATE, status: 400 };
     return { ok: false, error: "The site did not answer in time.", status: 502 };
   }
   if (!res || !res.ok) {

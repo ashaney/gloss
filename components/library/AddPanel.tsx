@@ -373,11 +373,9 @@ function Setup({ token, label, origin }: { token: string; label: string; origin:
       : label === "Claude"
         ? [
             { title: "Claude Code: run this", body: "Then ask Claude to save something to your Gloss library.", copy: `claude mcp add --transport http gloss ${url} --header "Authorization: Bearer ${token}"` },
-            { title: "Or claude.ai: Settings, Connectors, Add custom connector", body: "This link carries your token, so keep it private.", copy: `${url}/${token}` },
           ]
         : [
             { title: "The server URL and a header", body: `URL ${url}, and this header:`, copy: `Authorization: Bearer ${token}` },
-            { title: "Or, for apps that only take a URL, one with your token in it", body: "Keep it private: it can end up in logs.", copy: `${url}/${token}` },
           ];
   return (
     <div className="mt-5 space-y-3">

@@ -3,9 +3,8 @@
  * has read itself) to their library and looks through it. Streamable HTTP, stateless: every request is one JSON-RPC
  * message answered with JSON, no session and no event stream.
  *
- * Auth is a personal token from the library ("Connect an agent"), sent as
- * `Authorization: Bearer gls_...`, or as the last part of the URL
- * (usegloss.io/mcp/gls_...) for clients that only take a URL.
+ * Auth is a personal token from the library ("Connect an agent"), sent only as
+ * `Authorization: Bearer gls_...`. This fork has no token-in-the-URL route: URLs end up in logs.
  */
 
 import { hashToken, looksLikeToken } from "./agent";
@@ -106,7 +105,7 @@ export function notAllowed() {
   return new Response(null, { status: 405, headers: { ...CORS, Allow: "POST, OPTIONS" } });
 }
 
-export async function handle(req: Request, pathToken?: string): Promise<Response> {
+export async function handle(req: Request): Promise<Response> {
   let body: unknown;
   try {
     body = await req.json();
@@ -121,7 +120,7 @@ export async function handle(req: Request, pathToken?: string): Promise<Response
   console.info("mcp:", msgs.map((m) => m.method).join(", "), first.method === "initialize" ? JSON.stringify({ v: first.params?.protocolVersion, client: first.params?.clientInfo }) : "");
 
   const header = req.headers.get("authorization")?.replace(/^Bearer\s+/i, "").trim();
-  const token = looksLikeToken(header) ? header : looksLikeToken(pathToken) ? pathToken : null;
+  const token = looksLikeToken(header) ? header : null;
   if (!process.env.DATABASE_URL) return fail(first.id, -32000, "The Gloss library is not available on this server.", 503);
   let who: { userId: string; label: string } | null = null;
   try {
@@ -129,7 +128,7 @@ export async function handle(req: Request, pathToken?: string): Promise<Response
   } catch {
     return fail(first.id, -32000, "The Gloss library is not reachable right now. Try again in a minute.", 503);
   }
-  if (!who) return fail(first.id, -32001, `Missing or revoked Gloss token. Make one in your library at ${SITE}/library, under Connect an agent.`, 401);
+  if (!who) return fail(first.id, -32001, "Missing or revoked Gloss token. Make one in your Gloss library, under Connect an agent.", 401);
   const { userId, label } = who;
   if (!allow(`mcp:${userId}`, 60, 60_000)) return fail(first.id, -32002, "Too many requests. Wait a minute, then try again.", 429);
 
