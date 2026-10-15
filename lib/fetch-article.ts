@@ -18,7 +18,11 @@ import { slugify, tidyTitle, undash, type Article, type Block } from "@/lib/arti
 import { APP_UA } from "@/lib/muse";
 
 const MAX_BYTES = 6_000_000;
-const MAX_PDF_BYTES = 25_000_000;
+/** A manual or a report with pictures runs to tens of megabytes; the browser reads it, at most PDF_MAX_PAGES pages. */
+const MAX_PDF_BYTES = 100_000_000;
+/** How long a site has to answer, and then to send the rest (a big PDF from a slow host). */
+const ANSWER_MS = 15_000;
+const BODY_MS = 90_000;
 /** Fewer words than this is a page whose article never reached the HTML. The shortest real one on a tested shelf had 220. */
 const MIN_WORDS = 80;
 
@@ -82,6 +86,35 @@ async function safeUrl(raw: string): Promise<URL | string> {
     return "Could not find that site. Check the link.";
   }
   return url;
+}
+
+/** The body as it streams in, or null once it runs past `max` bytes, so an oversized file is dropped early. */
+async function readCapped(res: Response, max: number): Promise<ArrayBuffer | null> {
+  if (Number(res.headers.get("content-length")) > max) {
+    await res.body?.cancel().catch(() => {});
+    return null;
+  }
+  const reader = res.body?.getReader();
+  if (!reader) return new ArrayBuffer(0);
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > max) {
+      await reader.cancel().catch(() => {});
+      return null;
+    }
+    chunks.push(value);
+  }
+  const out = new Uint8Array(size);
+  let at = 0;
+  for (const c of chunks) {
+    out.set(c, at);
+    at += c.byteLength;
+  }
+  return out.buffer;
 }
 
 /** Readability's excerpt is often just the first paragraph; only keep it when it adds something. */
@@ -186,18 +219,25 @@ export async function fetchArticle(raw: string, opts: { pdf?: boolean } = {}): P
   // Follow redirects by hand so every hop gets the same private-address check.
   let res: Response | null = null;
   let target: URL = checked;
+  // One abort for each hop: ANSWER_MS for the headers, then BODY_MS for the body of the last one.
+  let hopAbort = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     for (let hop = 0; hop < 5; hop++) {
+      hopAbort = new AbortController();
+      const abort = hopAbort;
+      timer = setTimeout(() => abort.abort(), ANSWER_MS);
       // Node's fetch takes an undici dispatcher; the DOM's RequestInit type doesn't name it.
       res = await fetch(target, {
         dispatcher: outside,
         redirect: "manual",
-        signal: AbortSignal.timeout(15_000),
+        signal: abort.signal,
         headers: {
           "User-Agent": `Mozilla/5.0 (compatible; ${APP_UA}; +reader)`,
           Accept: opts.pdf ? "text/html,application/xhtml+xml,application/pdf" : "text/html,application/xhtml+xml",
         },
       } as RequestInit);
+      clearTimeout(timer);
       const location = res.status >= 300 && res.status < 400 ? res.headers.get("location") : null;
       if (!location) break;
       const next = await safeUrl(new URL(location, target).toString());
@@ -205,9 +245,23 @@ export async function fetchArticle(raw: string, opts: { pdf?: boolean } = {}): P
       target = next;
     }
   } catch (e) {
+    clearTimeout(timer);
     if (refusedPrivate(e)) return { ok: false, error: PRIVATE, status: 400 };
     return { ok: false, error: "The site did not answer in time.", status: 502 };
   }
+  const abort = hopAbort;
+  timer = setTimeout(() => abort.abort(), BODY_MS);
+  try {
+    return await readArticle(res, target, opts);
+  } catch {
+    return { ok: false, error: "The site stopped sending before the page arrived. Try again.", status: 502 };
+  } finally {
+    clearTimeout(timer);
+    await res?.body?.cancel().catch(() => {});
+  }
+}
+
+async function readArticle(res: Response | null, target: URL, opts: { pdf?: boolean }): Promise<FetchResult> {
   if (!res || !res.ok) {
     const status = res?.status ?? 0;
     const msg =
@@ -221,8 +275,8 @@ export async function fetchArticle(raw: string, opts: { pdf?: boolean } = {}): P
 
   const type = res.headers.get("content-type") ?? "";
   if (type.includes("application/pdf") && opts.pdf) {
-    const pdf = await res.arrayBuffer();
-    if (pdf.byteLength > MAX_PDF_BYTES) return { ok: false, error: "That PDF is too large to import.", status: 413 };
+    const pdf = await readCapped(res, MAX_PDF_BYTES);
+    if (!pdf) return { ok: false, error: `That PDF is over ${MAX_PDF_BYTES / 1_000_000}MB, too large to import.`, status: 413 };
     const name = decodeURIComponent(target.pathname.split("/").pop() || "document.pdf");
     return { ok: true, pdf, name: name.toLowerCase().endsWith(".pdf") ? name : `${name}.pdf` };
   }
@@ -231,8 +285,8 @@ export async function fetchArticle(raw: string, opts: { pdf?: boolean } = {}): P
   }
   if (!type.includes("html")) return { ok: false, error: "That link is not a web page.", status: 415 };
 
-  const buf = await res.arrayBuffer();
-  if (buf.byteLength > MAX_BYTES) return { ok: false, error: "That page is too large to import.", status: 413 };
+  const buf = await readCapped(res, MAX_BYTES);
+  if (!buf) return { ok: false, error: "That page is too large to import.", status: 413 };
   const html = new TextDecoder().decode(buf);
 
   const { document } = parseHTML(html);

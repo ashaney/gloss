@@ -103,7 +103,7 @@ export async function pdfToArticle(file: File, onProgress?: PdfProgress): Promis
   hard = hard.filter((p) => p <= pages).sort((a, b) => a - b).slice(0, UPGRADE_MAX);
   parser.free();
   const vision = new Map<number, Block[]>();
-  if (unreadable.length) await readByVision(lp, bytes, unreadable, vision, onProgress);
+  const visionError = unreadable.length ? await readByVision(lp, bytes, unreadable, vision, onProgress) : null;
 
   // Assemble in page order: the vision model's reading replaces that page's text layer. Every block
   // keeps its page. Paragraphs are joined across page breaks, but never into or out of a hard page,
@@ -132,8 +132,11 @@ export async function pdfToArticle(file: File, onProgress?: PdfProgress): Promis
   const stitched = segments.flatMap(stitchBlocks);
   // No title from the text layer (a scan, say): the first heading the page reader found.
   if (!title && stitched[0] && (stitched[0].type === "h2" || stitched[0].type === "h3") && text(stitched[0]).length < 200) title = text(stitched.shift()!);
+  // A file named by an id (6a452a3b…_original.pdf): the first short line of the first page reads better than the name.
+  if (!title && /[0-9a-f]{12,}|^\d+$/i.test(file.name.replace(/\.pdf$/i, "")) && stitched[0]?.page === 1 && text(stitched[0]).length < 80) title = text(stitched.shift()!);
   const blocks = stitched.map((b, i) => ({ ...b, id: `b${i + 1}` }));
-  if (!blocks.length) throw new PdfError(unreadable.length ? "Could not read the pages of this PDF. Try again in a moment." : "There was no readable text in this PDF.");
+  // A page the vision model could not read costs that page, not the PDF; its error matters only when nothing else was read.
+  if (!blocks.length) throw visionError ?? new PdfError(unreadable.length ? "Could not read the pages of this PDF. Try again in a moment." : "There was no readable text in this PDF.");
 
   if (!title) title = file.name.replace(/\.pdf$/i, "").replace(/[_-]+/g, " ");
   return {
@@ -246,7 +249,8 @@ async function pageImage(png: Uint8Array): Promise<string> {
   });
 }
 
-async function readByVision(lp: LP, bytes: Uint8Array, pageNums: number[], into: Map<number, Block[]>, onProgress?: PdfProgress) {
+/** Reads the pages into `into`; the error of the last page that failed, if one did. */
+async function readByVision(lp: LP, bytes: Uint8Array, pageNums: number[], into: Map<number, Block[]>, onProgress?: PdfProgress): Promise<PdfError | null> {
   let done = 0;
   let stop: PdfError | null = null;
   const label = () => `Reading ${pageNums.length === 1 ? "a scanned page" : `scanned pages, ${done} of ${pageNums.length}`}`;
@@ -270,7 +274,8 @@ async function readByVision(lp: LP, bytes: Uint8Array, pageNums: number[], into:
             body: JSON.stringify({ image: await pageImage(new Uint8Array(s.imageBytes)) }),
           });
           const j = (await res.json()) as { markdown?: string; error?: string };
-          if (j.markdown) into.set(s.pageNum, markdownBlocks(htmlTablesToMarkdown(j.markdown)));
+          // An empty reading is a blank page (a back cover, say), read correctly.
+          if (typeof j.markdown === "string") into.set(s.pageNum, j.markdown.trim() ? markdownBlocks(htmlTablesToMarkdown(j.markdown)) : []);
           else stop = new PdfError(j.error ?? "Could not read this scanned page.");
         } catch {}
         done++;
@@ -278,8 +283,7 @@ async function readByVision(lp: LP, bytes: Uint8Array, pageNums: number[], into:
       })
     );
   }
-  // Nothing read at all: say so, rather than an empty text.
-  if (stop && !into.size) throw stop;
+  return stop;
 }
 
 /**
