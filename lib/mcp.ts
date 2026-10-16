@@ -11,8 +11,8 @@ import { hashToken, looksLikeToken } from "./agent";
 import { normalizeUrl } from "./links";
 import { blockText, textToArticle, wordCount, type Article } from "./article";
 import { shelfOf, shelveForUser, tokenUser, type ShelfRow } from "./db";
-import { arxivFullText, fetchArticle, notAnArticle } from "./fetch-article";
-import { TOPIC, TOPICS, isTopic, yearOf, type TopicKey } from "./library";
+import { arxivFullText, fetchArticle, notAnArticle, type FailKind } from "./fetch-article";
+import { TOPIC, TOPICS, cleanTags, isTopic, yearOf, type TopicKey } from "./library";
 import { allow } from "./ratelimit";
 import { classify } from "./shelve";
 import { excerptOf } from "./excerpt";
@@ -23,6 +23,8 @@ const PER_CALL = 25;
 /** About 60,000 words: a long essay or a two-hour transcript, well short of a book. */
 const MAX_TEXT = 400_000;
 const PER_DAY = 1000;
+/** How long sorting may take before a text goes to Unsorted instead, for the browser to sort later. */
+const SORT_MS = 45_000;
 const SITE = process.env.NEXT_PUBLIC_SITE_URL ?? "https://usegloss.io";
 
 const INSTRUCTIONS = `Gloss is a reader. This server is the reader's own library in Gloss: save articles to it, and look through what is there.
@@ -181,6 +183,12 @@ const toolResult = (text: string, structured: Record<string, unknown>) => ({ con
 
 type Saved = { url: string; status: "saved" | "already_saved" | "failed"; title?: string; topic?: string; reason?: string };
 
+/** What save_articles tells an agent instead, where the agent can do something about it. */
+const TO_AGENT: Partial<Record<FailKind, string>> = {
+  social: "This is a social post, not an article. Send the link the post points to, or, if the post is the piece, read it and send its text with save_text.",
+  video: "This is a video, not an article. Gloss reads text: send its transcript with save_text.",
+  pdf: "This link is a PDF. Agents can't save PDFs yet; open it in Gloss to read it.",
+};
 
 async function saveArticles(userId: string, args: Record<string, unknown>, via: string) {
   const raw = Array.isArray(args.urls) ? args.urls.filter((u): u is string => typeof u === "string" && u.trim().length > 0) : [];
@@ -188,40 +196,17 @@ async function saveArticles(userId: string, args: Record<string, unknown>, via: 
   if (raw.length > PER_CALL) return toolError(`At most ${PER_CALL} URLs per call. Send the rest in another call.`);
 
   const shelf = await shelfOf(userId);
-  const have = new Map<string, ShelfRow>();
-  for (const r of shelf) if (typeof r.data.sourceUrl === "string") have.set(normalizeUrl(r.data.sourceUrl), r);
-  let budget = savesLeft(shelf);
+  const have = shelfByUrl(shelf);
+  const budget = { left: savesLeft(shelf) };
 
   const seen = new Set<string>();
   const queue = raw.map((url) => ({ url, key: normalizeUrl(url) })).filter((x) => (seen.has(x.key) ? false : (seen.add(x.key), true)));
   const results: Saved[] = [];
 
-  const one = async ({ url, key }: { url: string; key: string }): Promise<Saved> => {
-    const kind = notAnArticle(url);
-    if (kind === "social") return { url, status: "failed", reason: "This is a social post, not an article. Send the link the post points to, or, if the post is the piece, read it and send its text with save_text." };
-    if (kind === "video") return { url, status: "failed", reason: "This is a video, not an article. Gloss reads text: send its transcript with save_text." };
-    const known = have.get(key);
-    if (known) return { url, status: "already_saved", title: String(known.data.title ?? ""), topic: TOPIC[isTopic(known.data.topic) ? known.data.topic : "unsorted"].name };
-    if (budget <= 0) return { url, status: "failed", reason: `The daily limit of ${PER_DAY} saves is reached. Try again tomorrow.` };
-    budget--;
-
-    // An arXiv abstract page holds only the abstract, and an agent can't save the PDF: arXiv's HTML rendering is the whole paper.
-    const html = arxivFullText(url, "html");
-    let r = html ? await fetchArticle(html) : null;
-    if (!r?.ok) r = await fetchArticle(url, { pdf: true });
-    if (!r.ok) return { url, status: "failed", reason: r.error };
-    if ("pdf" in r) return { url, status: "failed", reason: "This link is a PDF. Agents can't save PDFs yet; open it in Gloss to read it." };
-    const a = r.article;
-    if (have.has(normalizeUrl(a.sourceUrl ?? ""))) {
-      const k = have.get(normalizeUrl(a.sourceUrl ?? ""))!;
-      return { url, status: "already_saved", title: String(k.data.title ?? "") };
-    }
-
-    const { topic, tags, scene } = await sortOf(a);
-    const item = shelfItem(a, { topic, tags, scene, via });
-    await shelveForUser(userId, item, a);
-    have.set(key, { id: a.id, data: item as unknown as Record<string, unknown>, pct: 0 });
-    return { url, status: "saved", title: a.title, topic: TOPIC[topic ?? "unsorted"].name };
+  const one = async ({ url }: { url: string }): Promise<Saved> => {
+    const r = await saveLink(userId, url, have, { by: "agent", via, budget });
+    if (r.status === "failed") return { url, status: "failed", reason: TO_AGENT[r.kind] ?? r.reason };
+    return { url, status: r.status, title: r.title, topic: r.topic };
   };
 
   // A few at a time: pages are slow, and one bad link never holds up the rest.
@@ -240,16 +225,79 @@ async function saveArticles(userId: string, args: Record<string, unknown>, via: 
   return toolResult(`${head}\n${lines.join("\n")}\n\nThey'll be on the shelves at ${SITE}/library.`, { saved: count("saved"), alreadySaved: count("already_saved"), failed: count("failed"), results });
 }
 
+/* ---------- one link onto the shelf: save_articles, and aarOS's /api/shelf/import ---------- */
+
+/** What became of one link. A failure says why twice: `kind` for a caller that acts on it, `reason` for one that shows it. */
+export type LinkSaved =
+  | { status: "saved" | "already_saved"; id: string; title: string; topic: string }
+  | { status: "failed"; kind: FailKind; reason: string };
+
+/** The shelf by normalized source URL, so a link is never saved twice. */
+export function shelfByUrl(shelf: ShelfRow[]): Map<string, ShelfRow> {
+  const have = new Map<string, ShelfRow>();
+  for (const r of shelf) if (typeof r.data.sourceUrl === "string") have.set(normalizeUrl(r.data.sourceUrl), r);
+  return have;
+}
+
+const already = (r: ShelfRow): LinkSaved => ({
+  status: "already_saved",
+  id: r.id,
+  title: String(r.data.title ?? ""),
+  topic: TOPIC[isTopic(r.data.topic) ? r.data.topic : "unsorted"].name,
+});
+
+/**
+ * Read one link onto a reader's shelf: fetch it, sort it onto a topic, shelve it. `have` is
+ * the shelf by URL (shelfByUrl), and a link saved here joins it. An agent's save spends from
+ * `budget`, checked once the link is known to be new. The reader's own import (`at`) keeps
+ * the day it was first saved elsewhere, and their own `tags` follow the ones Gloss gives it.
+ */
+export async function saveLink(
+  userId: string,
+  url: string,
+  have: Map<string, ShelfRow>,
+  opts: { by?: "agent"; via?: string; budget?: { left: number }; at?: number; tags?: string[] } = {}
+): Promise<LinkSaved> {
+  const kind = notAnArticle(url);
+  if (kind === "social") return { status: "failed", kind, reason: "That's a post on a social site, not an article." };
+  if (kind === "video") return { status: "failed", kind, reason: "That's a video, and Gloss reads text." };
+  const known = have.get(normalizeUrl(url));
+  if (known) return already(known);
+  if (opts.budget) {
+    if (opts.budget.left <= 0) return { status: "failed", kind: "error", reason: `The daily limit of ${PER_DAY} saves is reached. Try again tomorrow.` };
+    opts.budget.left--;
+  }
+
+  // An arXiv abstract page holds only the abstract, and an agent can't save the PDF: arXiv's HTML rendering is the whole paper.
+  const html = arxivFullText(url, "html");
+  let r = html ? await fetchArticle(html) : null;
+  if (!r?.ok) r = await fetchArticle(url, { pdf: true });
+  if (!r.ok) return { status: "failed", kind: r.kind, reason: r.error };
+  if ("pdf" in r) return { status: "failed", kind: "pdf", reason: "That link is a PDF. Open it in Gloss to read it." };
+  const a = r.article;
+  const moved = have.get(normalizeUrl(a.sourceUrl ?? ""));
+  if (moved) return already(moved);
+
+  const { topic, tags, scene } = await sortOf(a);
+  const all = opts.tags?.length ? cleanTags([...(tags ?? []), ...opts.tags], topic ?? "unsorted", 8) : tags ?? [];
+  const item = shelfItem(a, { topic, tags: all.length ? all : undefined, scene, by: opts.by, via: opts.via, at: opts.at });
+  await shelveForUser(userId, item, a);
+  const row = { id: a.id, data: item as unknown as Record<string, unknown>, pct: 0 };
+  have.set(normalizeUrl(url), row).set(normalizeUrl(a.sourceUrl ?? url), row);
+  return { status: "saved", id: a.id, title: a.title, topic: TOPIC[topic ?? "unsorted"].name };
+}
+
 /** Saves an agent may still make today: PER_DAY across both save tools. */
 function savesLeft(shelf: ShelfRow[]) {
   const dayAgo = Date.now() - 86_400_000;
   return PER_DAY - shelf.filter((r) => r.data.addedBy === "agent" && Number(r.data.addedAt) > dayAgo).length;
 }
 
-/** Sort it now. If sorting fails, it waits in Unsorted and the browser sorts it later. */
+/** Sort it now. If sorting fails or hangs, it waits in Unsorted and the browser sorts it later. */
 async function sortOf(a: Article): Promise<{ topic?: TopicKey; tags?: string[]; scene?: string }> {
-  const c = await classify({ title: a.title, author: a.author, source: a.source, dek: a.dek, excerpt: excerptOf(a.blocks) });
-  if (!c.ok) return {};
+  const input = { title: a.title, author: a.author, source: a.source, dek: a.dek, excerpt: excerptOf(a.blocks) };
+  const c = await classify(input, { signal: AbortSignal.timeout(SORT_MS) }).catch(() => null);
+  if (!c?.ok) return {};
   return { topic: c.shelving.topic, scene: c.shelving.scene, tags: c.shelving.tags.length ? c.shelving.tags : undefined };
 }
 
@@ -290,7 +338,7 @@ async function saveText(userId: string, args: Record<string, unknown>, via: stri
   a.published = str(args.published);
   for (const k of ["author", "source", "sourceUrl", "published"] as const) if (a[k] === undefined) delete a[k];
 
-  const item = shelfItem(a, { ...(await sortOf(a)), via });
+  const item = shelfItem(a, { ...(await sortOf(a)), by: "agent", via });
   await shelveForUser(userId, item, a);
   const topic = TOPIC[isTopic(item.topic) ? item.topic : "unsorted"].name;
   return toolResult(`Saved: ${a.title} (${topic}, ${item.words.toLocaleString("en-US")} words)\n\nIt'll be on the shelves at ${SITE}/library.`, {
@@ -302,7 +350,7 @@ async function saveText(userId: string, args: Record<string, unknown>, via: stri
   });
 }
 
-function shelfItem(a: Article, s: { topic?: TopicKey; tags?: string[]; scene?: string; via?: string }): LibraryItem {
+function shelfItem(a: Article, s: { topic?: TopicKey; tags?: string[]; scene?: string; by?: "agent"; via?: string; at?: number }): LibraryItem {
   const item: LibraryItem = {
     id: a.id,
     title: a.title,
@@ -310,7 +358,7 @@ function shelfItem(a: Article, s: { topic?: TopicKey; tags?: string[]; scene?: s
     source: a.source,
     words: wordCount(a),
     origin: a.origin ?? "url",
-    addedAt: Date.now(),
+    addedAt: s.at ?? Date.now(),
     dek: a.dek,
     year: yearOf(a.published),
     sourceUrl: a.sourceUrl,
@@ -318,8 +366,9 @@ function shelfItem(a: Article, s: { topic?: TopicKey; tags?: string[]; scene?: s
     topic: s.topic,
     tags: s.tags,
     scene: s.scene,
-    addedBy: "agent",
-    // The connection's name, as the reader chose it ("Grok Bot", "Claude"), so the library can say who shelved it.
+    addedBy: s.by,
+    // The connection's name, as the reader chose it ("Grok Bot", "Claude"), so the library can say who shelved it,
+    // or the app the reader imported it from ("aarOS Library").
     addedVia: s.via || undefined,
   };
   for (const k of Object.keys(item) as (keyof LibraryItem)[]) if (item[k] === undefined) delete item[k];

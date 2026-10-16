@@ -268,7 +268,7 @@ export function yearOf(published?: string): number | undefined {
 export type Shelving = { topic: TopicKey; tags: string[]; scene?: string };
 
 /** Tags: a few short lowercase words, never the topic's own name. */
-export function cleanTags(v: unknown, topic: TopicKey): string[] {
+export function cleanTags(v: unknown, topic: TopicKey, max = 3): string[] {
   if (!Array.isArray(v)) return [];
   const name = TOPIC[topic].name.toLowerCase();
   const out: string[] = [];
@@ -277,7 +277,7 @@ export function cleanTags(v: unknown, topic: TopicKey): string[] {
     const s = t.toLowerCase().replace(/[^a-z0-9 &+.-]/g, "").replace(/\s+/g, " ").trim();
     if (s.length > 32) continue;
     if (s && s !== name && !out.includes(s)) out.push(s);
-    if (out.length === 3) break;
+    if (out.length === max) break;
   }
   return out;
 }
