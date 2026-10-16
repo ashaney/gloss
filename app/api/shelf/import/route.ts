@@ -1,4 +1,5 @@
 import { shelfOf } from "@/lib/db";
+import { MAX_HTML_CHARS } from "@/lib/fetch-article";
 import { saveLink, shelfByUrl } from "@/lib/mcp";
 import { LOCAL_USER_ID } from "@/lib/user";
 
@@ -13,6 +14,10 @@ const EARLIEST = Date.UTC(1990, 0, 1);
  * but as the reader's own import: no daily limit, not marked as an agent's, and shelved on the
  * day it was bookmarked (`addedAt`, epoch ms) instead of today. Tailnet-only, like /api/shelf.
  *
+ * `html` is the page itself, for a site that turns this reader away but showed a real browser
+ * the page, or an archived copy of one that is gone (`base`, the address it was read from, so
+ * its pictures and links resolve). The article keeps `url` as its source either way.
+ *
  * Answers 200 with what became of the link, `kind` saying why one failed. 400 is a body it
  * can't use; 503 is Gloss's own library failing, so the link was not judged at all.
  */
@@ -25,13 +30,17 @@ export async function POST(req: Request) {
   }
   if (!body || typeof body !== "object" || Array.isArray(body)) return Response.json({ error: "Body must be a JSON object." }, { status: 400 });
 
-  const { url, addedAt, tags, via } = body;
+  const { url, addedAt, tags, via, html, base } = body;
   if (typeof url !== "string" || !url.trim() || url.length > 4000) return Response.json({ error: "Send the link in `url`." }, { status: 400 });
   if (addedAt !== undefined && (typeof addedAt !== "number" || !Number.isFinite(addedAt) || addedAt < EARLIEST || addedAt > Date.now() + 86_400_000)) {
     return Response.json({ error: "`addedAt` must be the time it was bookmarked, in milliseconds since 1970." }, { status: 400 });
   }
   if (tags !== undefined && (!Array.isArray(tags) || tags.some((t) => typeof t !== "string"))) return Response.json({ error: "`tags` must be a list of strings." }, { status: 400 });
   if (via !== undefined && typeof via !== "string") return Response.json({ error: "`via` must be a string." }, { status: 400 });
+  if (html !== undefined && (typeof html !== "string" || !html.trim() || html.length > MAX_HTML_CHARS)) {
+    return Response.json({ error: `\`html\` must be the page's HTML, at most ${MAX_HTML_CHARS} characters.` }, { status: 400 });
+  }
+  if (base !== undefined && (typeof base !== "string" || !/^https?:\/\//i.test(base))) return Response.json({ error: "`base` must be an http(s) address." }, { status: 400 });
 
   try {
     const have = shelfByUrl(await shelfOf(LOCAL_USER_ID));
@@ -39,6 +48,7 @@ export async function POST(req: Request) {
       at: addedAt === undefined ? undefined : Math.round(addedAt),
       tags: tags as string[] | undefined,
       via: via?.trim().slice(0, 60) || undefined,
+      page: typeof html === "string" ? { html, base: base as string | undefined } : undefined,
     });
     return Response.json(r, { headers: { "Cache-Control": "no-store" } });
   } catch (e) {

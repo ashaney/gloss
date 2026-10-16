@@ -11,7 +11,7 @@ import { hashToken, looksLikeToken } from "./agent";
 import { normalizeUrl } from "./links";
 import { blockText, textToArticle, wordCount, type Article } from "./article";
 import { shelfOf, shelveForUser, tokenUser, type ShelfRow } from "./db";
-import { arxivFullText, fetchArticle, notAnArticle, type FailKind } from "./fetch-article";
+import { arxivFullText, articleFromHtml, fetchArticle, notAnArticle, type FailKind, type FetchResult } from "./fetch-article";
 import { TOPIC, TOPICS, cleanTags, isTopic, yearOf, type TopicKey } from "./library";
 import { allow } from "./ratelimit";
 import { classify } from "./shelve";
@@ -256,7 +256,7 @@ export async function saveLink(
   userId: string,
   url: string,
   have: Map<string, ShelfRow>,
-  opts: { by?: "agent"; via?: string; budget?: { left: number }; at?: number; tags?: string[] } = {}
+  opts: { by?: "agent"; via?: string; budget?: { left: number }; at?: number; tags?: string[]; page?: { html: string; base?: string } } = {}
 ): Promise<LinkSaved> {
   const kind = notAnArticle(url);
   if (kind === "social") return { status: "failed", kind, reason: "That's a post on a social site, not an article." };
@@ -268,10 +268,28 @@ export async function saveLink(
     opts.budget.left--;
   }
 
-  // An arXiv abstract page holds only the abstract, and an agent can't save the PDF: arXiv's HTML rendering is the whole paper.
-  const html = arxivFullText(url, "html");
-  let r = html ? await fetchArticle(html) : null;
-  if (!r?.ok) r = await fetchArticle(url, { pdf: true });
+  let r: FetchResult | null = null;
+  if (opts.page) {
+    // The page as the reader's browser (or an archive) has it: read here, kept under its own link.
+    let base: URL, home: string;
+    try {
+      home = new URL(url).hostname.replace(/^www\./, "");
+      base = new URL(opts.page.base ?? url);
+    } catch {
+      return { status: "failed", kind: "error", reason: "The page's address is not a URL." };
+    }
+    r = articleFromHtml(opts.page.html, base);
+    if (r.ok && "article" in r) {
+      // An archived copy names the archive as its site; the article is still the original's.
+      if (r.article.source === base.hostname.replace(/^www\./, "")) r.article.source = home;
+      r.article.sourceUrl = url;
+    }
+  } else {
+    // An arXiv abstract page holds only the abstract, and an agent can't save the PDF: arXiv's HTML rendering is the whole paper.
+    const html = arxivFullText(url, "html");
+    r = html ? await fetchArticle(html) : null;
+    if (!r?.ok) r = await fetchArticle(url, { pdf: true });
+  }
   if (!r.ok) return { status: "failed", kind: r.kind, reason: r.error };
   if ("pdf" in r) return { status: "failed", kind: "pdf", reason: "That link is a PDF. Open it in Gloss to read it." };
   const a = r.article;

@@ -298,8 +298,18 @@ async function readArticle(res: Response | null, target: URL, opts: { pdf?: bool
 
   const buf = await readCapped(res, MAX_BYTES);
   if (!buf) return { ok: false, error: "That page is too large to import.", status: 413, kind: "unreadable" };
-  const html = new TextDecoder().decode(buf);
+  return articleFromHtml(new TextDecoder().decode(buf), target);
+}
 
+/** The largest page `articleFromHtml` takes from a caller, in characters. */
+export const MAX_HTML_CHARS = MAX_BYTES;
+
+/**
+ * A page's HTML as an article, by the same reading a fetched page gets. `target` is where the
+ * page lives: its links and pictures resolve against it, and it becomes the article's source.
+ * Used directly when the page was read some other way (a real browser, an archived copy).
+ */
+export function articleFromHtml(html: string, target: URL): FetchResult {
   const { document } = parseHTML(html);
   // Readability resolves relative links against the document URL.
   try {
