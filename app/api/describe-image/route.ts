@@ -4,8 +4,8 @@ export const runtime = "nodejs";
 export const maxDuration = 90;
 
 /**
- * What a picture shows, for aarOS's image library: a one-sentence caption, a few tags and the
- * text legible in it, read by Muse Spark. Tailnet-only, like /api/shelf. The hub sends a JPEG
+ * What a picture shows, for aarOS's image library: a short title, a one-sentence caption, a few
+ * tags and the text legible in it, read by Muse Spark. Tailnet-only, like /api/shelf. The hub sends a JPEG
  * at most 1024 px on its long side, and asks again later when this answers 502.
  */
 const MAX_IMAGE_CHARS = 3_500_000;
@@ -13,7 +13,8 @@ const MAX_IMAGE_CHARS = 3_500_000;
 const MODEL_MS = 75_000;
 
 const PROMPT = `Describe this picture for a personal image library. Reply with JSON only:
-{"caption": "...", "tags": ["..."], "text": "..."}
+{"title": "...", "caption": "...", "tags": ["..."], "text": "..."}
+- title: 2 to 6 words naming the picture, like a gallery label ("Bear hailing a country bus"). No quotes, no full stop.
 - caption: one plain sentence under 160 characters saying what the picture shows. Start with the subject, not "This image shows".
 - tags: 3 to 8 lowercase single words or short phrases: the main objects, materials, colours or style, and what kind of picture it is (photo, screenshot, illustration, painting, poster, diagram, chart, map, ui, product, logo, meme).
 - text: the words legible in the picture, as written, at most 300 characters; "" if there are none.`;
@@ -25,7 +26,7 @@ function clip(s: string, max: number): string {
 }
 
 /** The answer's JSON, wherever the model put it: after its reasoning, inside a fence, or bare. */
-function parse(raw: string): { caption?: unknown; tags?: unknown; text?: unknown } | null {
+function parse(raw: string): { title?: unknown; caption?: unknown; tags?: unknown; text?: unknown } | null {
   let t = raw.replace(/<think>[\s\S]*?<\/think>/g, "");
   if (t.includes("</think>")) t = t.slice(t.lastIndexOf("</think>") + 8);
   const start = t.indexOf("{");
@@ -79,5 +80,6 @@ export async function POST(req: Request) {
   }
   // A model with nothing to read sometimes says so in words.
   const text = typeof j?.text === "string" && !/^(none|n\/a|no text|null)\.?$/i.test(j.text.trim()) ? clip(j.text, 300) : "";
-  return Response.json({ caption, tags, text }, { headers: { "Cache-Control": "no-store" } });
+  const title = typeof j?.title === "string" ? clip(j.title.replace(/^["'“]|["'”.]$/g, ""), 60) : "";
+  return Response.json({ title, caption, tags, text }, { headers: { "Cache-Control": "no-store" } });
 }
